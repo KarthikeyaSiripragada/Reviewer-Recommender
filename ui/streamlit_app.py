@@ -4,9 +4,17 @@ import traceback
 from src.parse_pdf import extract_text
 from src.query import recommend
 import torch
-
+st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] {
+        background-image: url("assets/types-of-research-papers-1170x781.webp");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+    }
+    </style>
+""", unsafe_allow_html=True)
 st.set_page_config(page_title="Reviewer Recommender", page_icon="🧠", layout="centered")
-
 st.title("Reviewer Recommender")
 st.markdown(
     "Upload a paper (PDF) → extract text → run the reviewer recommender on the extracted text."
