@@ -10,7 +10,6 @@ def extract_text(pdf_path: str) -> str:
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"File not found: {pdf_path}")
-
     raw = parser.from_file(pdf_path)
     text = raw.get("content", "")
     if not text:
@@ -34,3 +33,8 @@ def batch_extract(input_dir: str, output_dir: str):
                     print(f"[OK] Parsed {file}")
                 except Exception as e:
                     print(f"[ERR] Failed {file}: {e}")
+                    # parse_pdf.py change (simple)
+    clean = " ".join(text.splitlines())
+    short = clean.strip()[:1200]   # title + abstract heuristic
+    return short
+
