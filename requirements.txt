@@ -1,0 +1,14 @@
+streamlit==1.39.0
+torch
+torchvision
+torchaudio
+sentence-transformers==3.1.1
+faiss-cpu==1.8.0
+numpy==1.26.4
+pandas==2.2.2
+tqdm==4.66.4
+scikit-learn==1.5.2
+matplotlib==3.9.2
+seaborn==0.13.2
+tika==2.6.0
+PyPDF2==3.0.1
