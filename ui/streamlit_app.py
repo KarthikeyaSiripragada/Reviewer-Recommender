@@ -10,11 +10,7 @@ import os, sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-st.set_page_config(page_title="Reviewer Recommender", page_icon="🧠", layout="centered")
-
-st.title("Reviewer Recommender — Demo UI")
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
 st.sidebar.markdown("### ⚙️ System Status")
 if device == "cuda":
     st.sidebar.success("✅ Running on **GPU (CUDA)**")
