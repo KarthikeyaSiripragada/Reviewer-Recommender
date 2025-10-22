@@ -12,7 +12,7 @@ except Exception:
 
 # PyPDF2 fallback
 try:
-    import PyPDF2 # type: ignore
+    import PyPDF2
     PYPDF2_OK = True
 except Exception:
     PYPDF2_OK = False
