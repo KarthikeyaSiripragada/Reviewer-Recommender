@@ -1,13 +1,14 @@
-# ui/streamlit_app.py
-import os, sys
-import streamlit as st
+import streamlit as st 
 import traceback
+import torch 
+import pandas as pd 
+import os, sys
+# ui/streamlit_app.py — TOP: ensure repo root on sys.path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, REPO_ROOT)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 from src.parse_pdf import extract_text
 from src.query import recommend
-import torch
-import pandas as pd
 # default device based on CUDA availability; the "Use GPU" checkbox
 # will be taken into account later when running the recommender
 device = "cuda" if torch.cuda.is_available() else "cpu"
