@@ -4,6 +4,7 @@ import torch
 import pandas as pd 
 import os, sys
 # ui/streamlit_app.py — TOP: ensure repo root on sys.path
+import os, sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
