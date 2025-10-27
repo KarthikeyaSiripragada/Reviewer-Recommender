@@ -1,7 +1,6 @@
 # src/embed_index.py
 import os, json, numpy as np, re, faiss
 from sentence_transformers import SentenceTransformer
-import torch
 
 # ── Paths
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,8 +12,8 @@ INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
 META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
 EMB_PATH   = os.path.join(_REPO_ROOT, "models", "embeddings.npy")
 
-# Auto device (no manual steps)
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# CPU only
+DEVICE = "cpu"
 
 def clean_text(text: str) -> str:
     text = text.replace("-\n", "")
@@ -30,9 +29,11 @@ def load_texts_from_authors(data_dir=DATA_DIR):
         return items
     for author in os.listdir(data_dir):
         ap = os.path.join(data_dir, author)
-        if not os.path.isdir(ap): continue
+        if not os.path.isdir(ap):
+            continue
         for fname in os.listdir(ap):
-            if not fname.lower().endswith((".pdf", ".txt")): continue
+            if not fname.lower().endswith((".pdf", ".txt")):
+                continue
             txt_path = os.path.join(PROCESSED_DIR, f"{os.path.splitext(fname)[0]}.txt")
             if not os.path.exists(txt_path):
                 print(f"[WARN] No processed txt for {author}/{fname}; skipping.")
@@ -44,10 +45,6 @@ def load_texts_from_authors(data_dir=DATA_DIR):
     return items
 
 def build_index(items, model_name=MODELPATH, device: str = DEVICE):
-    # Safety: if Torch is CPU-only but someone passed "cuda", fall back
-    if device == "cuda" and not torch.cuda.is_available():
-        device = "cpu"
-
     print(f"[INFO] Building FAISS index using model: {model_name} on {device}")
     model = SentenceTransformer(model_name, device=device)
 
@@ -79,4 +76,4 @@ if __name__ == "__main__":
     if not items:
         print("[ERR] No items found. Make sure processed text files exist.")
     else:
-        build_index(items)  # auto device
+        build_index(items)  # CPU only

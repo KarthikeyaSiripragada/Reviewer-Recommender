@@ -2,15 +2,16 @@
 import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_JAX"] = "1"
+
 import json
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from collections import defaultdict
-import torch
 import re
-# ---- Device
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# CPU only
+DEVICE = "cpu"
 
 # ---- Resolve paths relative to repo root (src/..)
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,21 +55,18 @@ def _compute_meta_score(query, candidate_meta):
 
 def _load_index_and_meta_or_empty(emb_dim: int):
     """Try to load FAISS + meta; if missing, return an empty index + empty meta."""
-    idx_exists = os.path.exists(INDEX_PATH)
-    meta_exists = os.path.exists(META_PATH)
-    if idx_exists and meta_exists:
+    if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(META_PATH, "r", encoding="utf-8") as f:
             meta = json.load(f)
         return index, meta
 
-    # Fallback to empty to keep UI alive
     print(
         "[INFO] FAISS index or metadata not found.\n"
         f"Expected:\n  {INDEX_PATH}\n  {META_PATH}\n"
         "Returning an empty index. Run embed_index.py to build the index."
     )
-    return faiss.IndexFlatIP(emb_dim), []
+    return faiss.IndexFlatIP(int(emb_dim)), []
 
 # ──────────────────────────────────────────────────────────────────────────────
 def recommend(
@@ -97,7 +95,9 @@ def recommend(
     try:
         emb_dim = embed_model.get_sentence_embedding_dimension()
     except Exception:
-        emb_dim = int(embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True).shape[-1])
+        emb_dim = int(
+            embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True).shape[-1]
+        )
 
     reranker = CrossEncoder(rerank_model_name, device=device)
 
@@ -105,13 +105,18 @@ def recommend(
     index, meta = _load_index_and_meta_or_empty(emb_dim)
 
     # Embed query
-    q_emb = embed_model.encode([query_text], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
-    norms = np.linalg.norm(q_emb, axis=1, keepdims=True); norms[norms == 0] = 1e-9
+    q_emb = embed_model.encode(
+        [query_text],
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    ).astype(np.float32)
+    norms = np.linalg.norm(q_emb, axis=1, keepdims=True)
+    norms[norms == 0] = 1e-9
     q_emb = q_emb / norms
 
     # Search
     ntotal = index.ntotal if hasattr(index, "ntotal") else 0
-    eff_top_k = min(int(top_k), max(ntotal, 1))  # at least 1 to satisfy faiss
+    eff_top_k = min(int(top_k), max(ntotal, 1))  # at least 1 for faiss
     D, I = index.search(q_emb, eff_top_k)
 
     cand_indices = [i for i in I[0].tolist() if isinstance(i, (int, np.integer)) and 0 <= i < len(meta)]
@@ -128,7 +133,7 @@ def recommend(
 
     # Rerank
     pairs = [(query_text, c.get("text", "")[:4000]) for c in candidates]
-    scores = np.array(reranker.predict(pairs, batch_size=reranker_batch_size), dtype=float)
+    scores = np.array(CrossEncoder(rerank_model_name, device=device).predict(pairs, batch_size=reranker_batch_size), dtype=float)
 
     # Normalize 0..1
     if scores.max() == scores.min():
@@ -149,7 +154,10 @@ def recommend(
     author_scores = defaultdict(list)
     for cand, score in top:
         author_scores[cand.get("author", "Unknown")].append(float(score))
-    author_rank = sorted([(a, float(max(s))) for a, s in author_scores.items()], key=lambda x: -x[1])
+    author_rank = sorted(
+        [(a, float(max(s))) for a, s in author_scores.items()],
+        key=lambda x: -x[1]
+    )
 
     # Console summary
     print("\n🔍 Query:", query_text)
@@ -164,7 +172,7 @@ def recommend(
 
     print("📊 Author Ranking Summary:")
     for i, (author, avg_score) in enumerate(author_rank, 1):
-        print(f"{i}. {author} — Score: {round(avg_score * 100, 2)}%")
+        print(f"{i}. {author} — Score: {round(avg_score * 100), 2}%")
 
     return {
         "paper_results": [(c, float(s * 100)) for c, s in top],
