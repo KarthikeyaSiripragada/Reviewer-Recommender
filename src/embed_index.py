@@ -1,6 +1,11 @@
 # src/embed_index.py
-import os, json, numpy as np, re, faiss
+import os
+import json
+import numpy as np
+import re
+import faiss
 from sentence_transformers import SentenceTransformer
+
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
@@ -10,10 +15,11 @@ PROCESSED_DIR = os.path.join(_REPO_ROOT, "data", "processed")
 
 MODELPATH = "all-mpnet-base-v2"
 INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
-META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
-EMB_PATH   = os.path.join(_REPO_ROOT, "models", "embeddings.npy")
+META_PATH = os.path.join(_REPO_ROOT, "models", "meta.json")
+EMB_PATH = os.path.join(_REPO_ROOT, "models", "embeddings.npy")
 
 DEVICE = "cpu"  # CPU-only
+
 
 def clean_text(text: str) -> str:
     text = text.replace("-\n", "")
@@ -21,6 +27,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r"Page\s*\d+", "", text, flags=re.I)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
+
 
 def load_texts_from_authors(data_dir=DATA_DIR):
     items = []
@@ -38,11 +45,16 @@ def load_texts_from_authors(data_dir=DATA_DIR):
             if not os.path.exists(txt_path):
                 print(f"[WARN] No processed txt for {author}/{fname}; skipping.")
                 continue
-            with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = clean_text(f.read())[:1200]
+            try:
+                with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = clean_text(f.read())[:1200]
+            except Exception as e:
+                print(f"[ERR] Could not read file {txt_path}: {e}")
+                continue
             if text.strip():
                 items.append({"id": len(items), "author": author, "file": fname, "text": text})
     return items
+
 
 def build_index(items, model_name=MODELPATH, device: str = DEVICE):
     print(f"[INFO] Building FAISS index using model: {model_name} on {device}")
@@ -70,6 +82,7 @@ def build_index(items, model_name=MODELPATH, device: str = DEVICE):
     print(f"[OK] Saved index → {INDEX_PATH}")
     print(f"[OK] Saved meta  → {META_PATH}")
     print(f"[OK] Saved embeddings → {EMB_PATH}")
+
 
 if __name__ == "__main__":
     items = load_texts_from_authors()
