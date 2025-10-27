@@ -6,4 +6,4 @@ sentence-transformers
 numpy
 pypdf
 pandas
-scikit-lea
+scikit-learn
