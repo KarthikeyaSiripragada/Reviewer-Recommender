@@ -8,15 +8,21 @@ import torch
 import os
 import re
 
+import os
+# ...
 # Auto GPU detection
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Resolve paths relative to repo root (src/..)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 
 # Default model names (can be overridden when calling recommend)
 DEFAULT_EMBED_MODEL = "all-mpnet-base-v2"
 DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-INDEX_PATH = "models/papers.index"
-META_PATH = "models/meta.json"
+INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
+META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
 
 def load_resources_index():
     """Load FAISS index and metadata only (fast)."""
