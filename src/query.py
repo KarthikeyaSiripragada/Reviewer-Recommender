@@ -13,19 +13,16 @@ import re
 # CPU only
 DEVICE = "cpu"
 
-# ---- Resolve paths relative to repo root (src/..)
+# Resolve paths
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 
-# ---- Default model names
 DEFAULT_EMBED_MODEL = "all-mpnet-base-v2"
 DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# ---- Data paths
 INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
 META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
 
-# ──────────────────────────────────────────────────────────────────────────────
 def _tok_set(s: str):
     if not s:
         return set()
@@ -54,7 +51,6 @@ def _compute_meta_score(query, candidate_meta):
     return 0.8 * kw_score + 0.2 * year_score
 
 def _load_index_and_meta_or_empty(emb_dim: int):
-    """Try to load FAISS + meta; if missing, return an empty index + empty meta."""
     if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(META_PATH, "r", encoding="utf-8") as f:
@@ -68,7 +64,6 @@ def _load_index_and_meta_or_empty(emb_dim: int):
     )
     return faiss.IndexFlatIP(int(emb_dim)), []
 
-# ──────────────────────────────────────────────────────────────────────────────
 def recommend(
     query_text,
     top_k=100,
@@ -80,35 +75,24 @@ def recommend(
     exclude_authors=None,
     reranker_batch_size=16
 ):
-    """
-    Returns:
-      {
-        "paper_results": [(candidate_meta, final_score_percent), ...],
-        "author_rank":   [(author, avg_score_percent), ...]
-      }
-    """
     if exclude_authors is None:
         exclude_authors = []
 
-    # Load models first (to know embedding dim for empty-index fallback)
+    # Models first (to get emb dim)
     embed_model = SentenceTransformer(embed_model_name, device=device)
     try:
         emb_dim = embed_model.get_sentence_embedding_dimension()
     except Exception:
-        emb_dim = int(
-            embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True).shape[-1]
-        )
+        emb_dim = int(embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True).shape[-1])
 
     reranker = CrossEncoder(rerank_model_name, device=device)
 
-    # Load FAISS + meta (or empty)
+    # FAISS + meta
     index, meta = _load_index_and_meta_or_empty(emb_dim)
 
-    # Embed query
+    # Encode query
     q_emb = embed_model.encode(
-        [query_text],
-        convert_to_numpy=True,
-        normalize_embeddings=True
+        [query_text], convert_to_numpy=True, normalize_embeddings=True
     ).astype(np.float32)
     norms = np.linalg.norm(q_emb, axis=1, keepdims=True)
     norms[norms == 0] = 1e-9
@@ -116,13 +100,12 @@ def recommend(
 
     # Search
     ntotal = index.ntotal if hasattr(index, "ntotal") else 0
-    eff_top_k = min(int(top_k), max(ntotal, 1))  # at least 1 for faiss
+    eff_top_k = min(int(top_k), max(ntotal, 1))
     D, I = index.search(q_emb, eff_top_k)
 
     cand_indices = [i for i in I[0].tolist() if isinstance(i, (int, np.integer)) and 0 <= i < len(meta)]
     candidates = [meta[i] for i in cand_indices]
 
-    # Exclude by author
     if exclude_authors:
         ex = set(a.strip() for a in exclude_authors if a.strip())
         candidates = [c for c in candidates if c.get("author") not in ex]
@@ -133,7 +116,7 @@ def recommend(
 
     # Rerank
     pairs = [(query_text, c.get("text", "")[:4000]) for c in candidates]
-    scores = np.array(CrossEncoder(rerank_model_name, device=device).predict(pairs, batch_size=reranker_batch_size), dtype=float)
+    scores = np.array(reranker.predict(pairs, batch_size=reranker_batch_size), dtype=float)
 
     # Normalize 0..1
     if scores.max() == scores.min():
@@ -141,7 +124,7 @@ def recommend(
     else:
         semantic = (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
 
-    # Combine with metadata score
+    # Combine with metadata
     final_scores = []
     for c, sem in zip(candidates, semantic):
         meta_score = _compute_meta_score(query_text, c)
@@ -150,16 +133,13 @@ def recommend(
     ranked = sorted(zip(candidates, final_scores), key=lambda x: -x[1])
     top = ranked[: int(rerank_k)]
 
-    # Aggregate by author (max)
+    # Author agg (max)
     author_scores = defaultdict(list)
     for cand, score in top:
         author_scores[cand.get("author", "Unknown")].append(float(score))
-    author_rank = sorted(
-        [(a, float(max(s))) for a, s in author_scores.items()],
-        key=lambda x: -x[1]
-    )
+    author_rank = sorted([(a, float(max(s))) for a, s in author_scores.items()], key=lambda x: -x[1])
 
-    # Console summary
+    # Console
     print("\n🔍 Query:", query_text)
     print("\n🏆 Top Recommended Reviewers:\n")
     for i, (cand, score) in enumerate(top, 1):
@@ -172,7 +152,7 @@ def recommend(
 
     print("📊 Author Ranking Summary:")
     for i, (author, avg_score) in enumerate(author_rank, 1):
-        print(f"{i}. {author} — Score: {round(avg_score * 100), 2}%")
+        print(f"{i}. {author} — Score: {round(avg_score * 100, 2)}%")
 
     return {
         "paper_results": [(c, float(s * 100)) for c, s in top],

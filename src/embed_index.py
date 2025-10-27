@@ -2,18 +2,18 @@
 import os, json, numpy as np, re, faiss
 from sentence_transformers import SentenceTransformer
 
-# ── Paths
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+
 DATA_DIR = os.path.join(_REPO_ROOT, "data", "authors")
 PROCESSED_DIR = os.path.join(_REPO_ROOT, "data", "processed")
+
 MODELPATH = "all-mpnet-base-v2"
 INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
 META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
 EMB_PATH   = os.path.join(_REPO_ROOT, "models", "embeddings.npy")
 
-# CPU only
-DEVICE = "cpu"
+DEVICE = "cpu"  # CPU-only
 
 def clean_text(text: str) -> str:
     text = text.replace("-\n", "")
@@ -76,4 +76,4 @@ if __name__ == "__main__":
     if not items:
         print("[ERR] No items found. Make sure processed text files exist.")
     else:
-        build_index(items)  # CPU only
+        build_index(items)
