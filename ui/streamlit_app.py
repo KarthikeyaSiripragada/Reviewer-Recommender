@@ -3,6 +3,10 @@ import traceback
 import torch 
 import pandas as pd 
 import os, sys
+import os
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["TRANSFORMERS_NO_JAX"] = "1"
+
 # ui/streamlit_app.py — TOP: ensure repo root on sys.path
 import os, sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -126,3 +130,8 @@ if run_btn:
             df2 = pd.DataFrame(rows_auth)
             csv2 = df2.to_csv(index=False).encode('utf-8')
             st.download_button("Download author ranking CSV", csv2, file_name="author_rank.csv", mime="text/csv")
+st.markdown(
+    "**Project Submission:** This application was developed by "
+    "**Karthikeya Siripragada (SE22UECM018)** and "
+    "**Karthik Raj Gupta (SE22UCAM004)**"
+)
