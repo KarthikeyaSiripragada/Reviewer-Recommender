@@ -4,11 +4,18 @@ import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_JAX"] = "1"
 os.environ.setdefault("USE_TIKA", "0")  # default: no Java/Tika
+APP_VERSION = "v2025-10-27-1330"
 
 import traceback
 import torch
 import pandas as pd
 import streamlit as st
+from src.query import INDEX_PATH, META_PATH
+import os
+st.sidebar.write("Index path:", INDEX_PATH)
+st.sidebar.write("Meta path:", META_PATH)
+st.sidebar.success("Index present") if os.path.exists(INDEX_PATH) else st.sidebar.error("Index MISSING")
+st.sidebar.success("Meta present")  if os.path.exists(META_PATH)  else st.sidebar.error("Meta MISSING")
 
 # Ensure repo root on sys.path
 import sys
@@ -132,8 +139,7 @@ if run_btn:
             df2 = pd.DataFrame(rows_auth)
             csv2 = df2.to_csv(index=False).encode('utf-8')
             st.download_button("Download author ranking CSV", csv2, file_name="author_rank.csv", mime="text/csv")
-
-st.markdown("---")
+st.sidebar.caption(f"Build: {APP_VERSION}")
 st.markdown(
     "**Project Submission:** This application was developed by "
     "**Karthikeya Siripragada (SE22UECM018)** and "
