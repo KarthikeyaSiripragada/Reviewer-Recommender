@@ -7,4 +7,3 @@ numpy
 pypdf
 pandas
 scikit-learn
-gensims
