@@ -1,4 +1,3 @@
-# ui/streamlit_app.py
 import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_JAX"] = "1"
@@ -49,6 +48,16 @@ RERANK_OPTIONS = {
 
 with st.sidebar:
     st.markdown("### Settings")
+    
+    # --- NEW: Mode Selector ---
+    recommend_mode = st.selectbox(
+        "Recommendation Mode",
+        ["embedding", "tfidf", "lda", "doc2vec"],
+        index=0,
+        help="Select the retrieval strategy. 'embedding' is the default SBERT+Reranker. 'tfidf' is keyword-based."
+    )
+    # ---
+    
     embed_model = st.selectbox("Embedding model", list(EMBED_OPTIONS.keys()), index=0)
     rerank_model = st.selectbox("Reranker model", list(RERANK_OPTIONS.keys()), index=0)
     top_k = st.number_input("Retrieve top_k", min_value=10, max_value=1000, value=50, step=10)
@@ -94,51 +103,71 @@ if run_btn:
         st.warning("Provide text (title + abstract recommended).")
     else:
         exclude_authors = [a.strip() for a in exclude_authors_raw.split(",") if a.strip()]
-        with st.spinner("Running recommendation..."):
-            res = recommend(
-                text_input,
-                top_k=int(top_k),
-                rerank_k=5,           # Pass a default integer
-                device="cpu",
-                embed_model_name=embed_model,
-                rerank_model_name=rerank_model,
-                metadata_weight=float(metadata_weight),
-                exclude_authors=exclude_authors,
-            )
-        st.success("Done")
+        
+        # ---- SAFE coercions BEFORE calling recommend (avoid int/float on None)
+        try:
+            top_k_val = int(top_k) if top_k is not None else 50
+        except Exception:
+            top_k_val = 50
+        try:
+            metadata_weight_val = float(metadata_weight) if metadata_weight is not None else 0.2
+        except Exception:
+            metadata_weight_val = 0.2
 
-        if not res["paper_results"]:
-            st.info("No results yet — build the FAISS index locally (`python -m src.embed_index`) and commit the `models/` folder.")
+        try:
+            with st.spinner(f"Running recommendation (mode: {recommend_mode})..."):
+                res = recommend(
+                    text_input,
+                    mode=recommend_mode,  # <-- NEW: Pass the selected mode
+                    top_k=top_k_val,
+                    rerank_k=5,           # Pass a default integer
+                    device="cpu",
+                    embed_model_name=embed_model,
+                    rerank_model_name=rerank_model,
+                    metadata_weight=metadata_weight_val,
+                    exclude_authors=exclude_authors,
+                )
+            st.success("Done")
 
-        # ---- Results (lean vertical)
-        rows = []
-        st.markdown("### Top papers (final score %)")
-        for i, (cand, score) in enumerate(res.get("paper_results", []), start=1):
-            st.markdown(f"**{i}. {cand.get('author','Unknown')}** — {round(float(score),2)}%")
-            st.caption(cand.get("file", "Unknown"))
-            snippet = (cand.get("text","")[:400] or "").replace("\n", " ")
-            st.text_area(f"Snippet {i}", snippet + " ...", height=110, key=f"snip{i}")
-            rows.append({
-                "rank": i,
-                "author": cand.get("author","Unknown"),
-                "file": cand.get("file","Unknown"),
-                "score": float(score)
-            })
+            if not res["paper_results"]:
+                st.info("No results yet — build the index files locally (`python -m src.embed_index` etc.) and commit the `models/` folder.")
 
-        st.markdown("### Author ranking")
-        rows_auth = []
-        for i, (author, avg) in enumerate(res.get("author_rank", []), start=1):
-            st.write(f"{i}. **{author}** — {round(float(avg),2)}%")
-            rows_auth.append({"rank": i, "author": author, "score": float(avg)})
+            # ---- Results (lean vertical)
+            rows = []
+            st.markdown("### Top papers (final score %)")
+            for i, (cand, score) in enumerate(res.get("paper_results", []), start=1):
+                st.markdown(f"**{i}. {cand.get('author','Unknown')}** — {round(float(score),2)}%")
+                st.caption(cand.get("file", "Unknown"))
+                snippet = (cand.get("text","")[:400] or "").replace("\n", " ")
+                st.text_area(f"Snippet {i}", snippet + " ...", height=110, key=f"snip{i}")
+                rows.append({
+                    "rank": i,
+                    "author": cand.get("author","Unknown"),
+                    "file": cand.get("file","Unknown"),
+                    "score": float(score)
+                })
 
-        if rows:
-            df = pd.DataFrame(rows)
-            st.download_button("Download paper results CSV", df.to_csv(index=False).encode("utf-8"),
-                                file_name="paper_results.csv", mime="text/csv")
-        if rows_auth:
-            df2 = pd.DataFrame(rows_auth)
-            st.download_button("Download author ranking CSV", df2.to_csv(index=False).encode("utf-8"),
-                                file_name="author_rank.csv", mime="text/csv")
+            st.markdown("### Author ranking")
+            rows_auth = []
+            for i, (author, avg) in enumerate(res.get("author_rank", []), start=1):
+                st.write(f"{i}. **{author}** — {round(float(avg),2)}%")
+                rows_auth.append({"rank": i, "author": author, "score": float(avg)})
+
+            if rows:
+                df = pd.DataFrame(rows)
+                st.download_button("Download paper results CSV", df.to_csv(index=False).encode("utf-8"),
+                                    file_name="paper_results.csv", mime="text/csv")
+            if rows_auth:
+                df2 = pd.DataFrame(rows_auth)
+                st.download_button("Download author ranking CSV", df2.to_csv(index=False).encode("utf-8"),
+                                    file_name="author_rank.csv", mime="text/csv")
+        
+        except NotImplementedError as e:
+            st.error(f"This mode is not implemented yet: {e}")
+        except Exception as e:
+            st.error("An error occurred during recommendation:")
+            st.text(traceback.format_exc())
+
 
 st.markdown("---")
 st.markdown(
