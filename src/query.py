@@ -1,13 +1,14 @@
 # src/query.py
+import os
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["TRANSFORMERS_NO_JAX"] = "1"
 import json
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from collections import defaultdict
 import torch
-import os
 import re
-
 # ---- Device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
