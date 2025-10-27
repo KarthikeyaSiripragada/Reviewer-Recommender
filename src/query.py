@@ -23,18 +23,14 @@ DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
 META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
 
-
+# ──────────────────────────────────────────────────────────────────────────────
 def _tok_set(s: str):
     if not s:
         return set()
     s = re.sub(r"[^\w\s]", " ", s.lower())
     return {t for t in s.split() if len(t) > 2}
 
-
 def _compute_meta_score(query, candidate_meta):
-    """
-    Meta score in [0,1] from keyword overlap + recency (if 'year' present).
-    """
     qset = _tok_set(query)
     text = candidate_meta.get("text", "")
     tset = _tok_set(text[:600])
@@ -55,34 +51,25 @@ def _compute_meta_score(query, candidate_meta):
 
     return 0.8 * kw_score + 0.2 * year_score
 
-
 def _load_index_and_meta_or_empty(emb_dim: int):
-    """
-    Try to load FAISS index + metadata. If files are missing, return an empty
-    inner-product index with the correct dim and empty metadata list.
-    """
+    """Try to load FAISS + meta; if missing, return an empty index + empty meta."""
     idx_exists = os.path.exists(INDEX_PATH)
     meta_exists = os.path.exists(META_PATH)
-
     if idx_exists and meta_exists:
         index = faiss.read_index(INDEX_PATH)
         with open(META_PATH, "r", encoding="utf-8") as f:
             meta = json.load(f)
         return index, meta
 
-    # Fallback: empty index + empty meta (prevents Streamlit crash)
-    index = faiss.IndexFlatIP(emb_dim)
-    meta = []
-    # Optional: log to console so devs know why results are empty
+    # Fallback to empty to keep UI alive
     print(
-        "[INFO] FAISS index or metadata not found. "
+        "[INFO] FAISS index or metadata not found.\n"
         f"Expected:\n  {INDEX_PATH}\n  {META_PATH}\n"
-        "Returning an empty index so the app keeps running. "
-        "Run embed_index.py to build the index."
+        "Returning an empty index. Run embed_index.py to build the index."
     )
-    return index, meta
+    return faiss.IndexFlatIP(emb_dim), []
 
-
+# ──────────────────────────────────────────────────────────────────────────────
 def recommend(
     query_text,
     top_k=100,
@@ -92,10 +79,9 @@ def recommend(
     rerank_model_name=DEFAULT_RERANK_MODEL,
     metadata_weight=0.2,
     exclude_authors=None,
-    reranker_batch_size=16,
+    reranker_batch_size=16
 ):
     """
-    Retrieve top_k papers from FAISS, rerank with a CrossEncoder, and aggregate by author.
     Returns:
       {
         "paper_results": [(candidate_meta, final_score_percent), ...],
@@ -105,79 +91,64 @@ def recommend(
     if exclude_authors is None:
         exclude_authors = []
 
-    # 1) Load models first (so we know embedding dimension for empty-index fallback)
+    # Load models first (to know embedding dim for empty-index fallback)
     embed_model = SentenceTransformer(embed_model_name, device=device)
     try:
         emb_dim = embed_model.get_sentence_embedding_dimension()
     except Exception:
-        # Fallback: compute from a dummy embedding
-        dummy = embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True)
-        emb_dim = int(dummy.shape[-1])
+        emb_dim = int(embed_model.encode(["x"], convert_to_numpy=True, normalize_embeddings=True).shape[-1])
 
     reranker = CrossEncoder(rerank_model_name, device=device)
 
-    # 2) Load FAISS + meta (or empty safe fallback)
+    # Load FAISS + meta (or empty)
     index, meta = _load_index_and_meta_or_empty(emb_dim)
 
-    # 3) Embed query and search
-    q_emb = embed_model.encode(
-        [query_text],
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    ).astype(np.float32)
-
-    # Safe L2-normalization (defensive)
-    norms = np.linalg.norm(q_emb, axis=1, keepdims=True)
-    norms[norms == 0] = 1e-9
+    # Embed query
+    q_emb = embed_model.encode([query_text], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+    norms = np.linalg.norm(q_emb, axis=1, keepdims=True); norms[norms == 0] = 1e-9
     q_emb = q_emb / norms
 
-    # Cap top_k to index size to avoid pointless work
+    # Search
     ntotal = index.ntotal if hasattr(index, "ntotal") else 0
-    eff_top_k = min(int(top_k), max(ntotal, 1))  # at least 1 so FAISS doesn't error
+    eff_top_k = min(int(top_k), max(ntotal, 1))  # at least 1 to satisfy faiss
     D, I = index.search(q_emb, eff_top_k)
 
-    # Build candidate list safely (handles empty index: I filled with -1)
     cand_indices = [i for i in I[0].tolist() if isinstance(i, (int, np.integer)) and 0 <= i < len(meta)]
     candidates = [meta[i] for i in cand_indices]
 
-    # Exclude by author if requested
+    # Exclude by author
     if exclude_authors:
         ex = set(a.strip() for a in exclude_authors if a.strip())
         candidates = [c for c in candidates if c.get("author") not in ex]
 
     if not candidates:
-        print("[WARN] No candidates found from FAISS (index empty or all excluded).")
+        print("[WARN] No candidates found (empty index or all excluded).")
         return {"paper_results": [], "author_rank": []}
 
-    # 4) Rerank with CrossEncoder
+    # Rerank
     pairs = [(query_text, c.get("text", "")[:4000]) for c in candidates]
     scores = np.array(reranker.predict(pairs, batch_size=reranker_batch_size), dtype=float)
 
-    # Normalize reranker scores to 0..1
+    # Normalize 0..1
     if scores.max() == scores.min():
         semantic = np.ones_like(scores)
     else:
         semantic = (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
 
-    # 5) Combine with metadata score
+    # Combine with metadata score
     final_scores = []
     for c, sem in zip(candidates, semantic):
         meta_score = _compute_meta_score(query_text, c)
-        final = (1.0 - metadata_weight) * sem + metadata_weight * meta_score
-        final_scores.append(final)
+        final_scores.append((1.0 - metadata_weight) * sem + metadata_weight * meta_score)
 
-    # 6) Sort + take top rerank_k
     ranked = sorted(zip(candidates, final_scores), key=lambda x: -x[1])
     top = ranked[: int(rerank_k)]
 
-    # 7) Aggregate to author (max)
+    # Aggregate by author (max)
     author_scores = defaultdict(list)
     for cand, score in top:
         author_scores[cand.get("author", "Unknown")].append(float(score))
-    author_rank = sorted(
-        [(a, float(max(s))) for a, s in author_scores.items()],
-        key=lambda x: -x[1],
-    )
+    author_rank = sorted([(a, float(max(s))) for a, s in author_scores.items()], key=lambda x: -x[1])
 
     # Console summary
     print("\n🔍 Query:", query_text)
@@ -194,7 +165,7 @@ def recommend(
     for i, (author, avg_score) in enumerate(author_rank, 1):
         print(f"{i}. {author} — Score: {round(avg_score * 100, 2)}%")
 
-    # Return percent scores for UI display
-    paper_results = [(c, float(s * 100)) for c, s in top]
-    author_rank_pct = [(a, float(s * 100)) for a, s in author_rank]
-    return {"paper_results": paper_results, "author_rank": author_rank_pct}
+    return {
+        "paper_results": [(c, float(s * 100)) for c, s in top],
+        "author_rank": [(a, float(s * 100)) for a, s in author_rank],
+    }
