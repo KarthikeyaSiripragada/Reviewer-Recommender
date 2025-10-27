@@ -1,9 +1,9 @@
 streamlit
-torch            # PyPI CPU wheels work on Linux
-faiss-cpu==1.9.0
-transformers>=4.41
-sentence-transformers>=2.6.1
-numpy==2.0.*
+torch
+faiss-cpu
+transformers
+sentence-transformers
+numpy
 pypdf
 pandas
-scikit-learn
+scikit-lea
