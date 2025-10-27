@@ -2,7 +2,6 @@
 import os
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
-
 import shutil
 
 def _java_available() -> bool:
