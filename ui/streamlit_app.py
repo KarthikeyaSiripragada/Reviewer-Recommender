@@ -1,60 +1,59 @@
 # ui/streamlit_app.py
 import os
-# Avoid TF/Keras/JAX pull-ins
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_JAX"] = "1"
-os.environ.setdefault("USE_TIKA", "0")  # default: no Java/Tika
-APP_VERSION = "v2025-10-27-1330"
+os.environ.setdefault("USE_TIKA", "0")
+APP_VERSION = "v2025-10-27-1619"
 
-import traceback
-import torch
-import pandas as pd
-import streamlit as st
-from src.query import INDEX_PATH, META_PATH
-import os
-st.sidebar.write("Index path:", INDEX_PATH)
-st.sidebar.write("Meta path:", META_PATH)
-st.sidebar.success("Index present") if os.path.exists(INDEX_PATH) else st.sidebar.error("Index MISSING")
-st.sidebar.success("Meta present")  if os.path.exists(META_PATH)  else st.sidebar.error("Meta MISSING")
-
-# Ensure repo root on sys.path
+# path fix
 import sys
+import os
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+# --- end of path fix ---
 
-from src.parse_pdf import extract_text
-from src.query import recommend
+# Now this import will work
+import traceback
+import pandas as pd
+import streamlit as st
+from src.query import recommend, INDEX_PATH, META_PATH # Combined imports
 
-# Fixed CPU-only
-device = "cpu"
+st.set_page_config(page_title="Reviewer Recommender", layout="wide")
 
-st.sidebar.markdown("### ⚙️ System Status")
+# ---- Sidebar: minimal + vertical
+st.sidebar.markdown("### System Status")
 st.sidebar.info("Running on **CPU**")
+st.sidebar.caption(f"Build: {APP_VERSION}")
+
+# Presence badges (no object dump)
+import os as _os
+if _os.path.exists(INDEX_PATH):
+    st.sidebar.success("Index present")
+else:
+    st.sidebar.error("Index MISSING")
+if _os.path.exists(META_PATH):
+    st.sidebar.success("Meta present")
+else:
+    st.sidebar.error("Meta MISSING")
 
 EMBED_OPTIONS = {
     "all-mpnet-base-v2": "MPNet — high-quality sentence embeddings (768-dim).",
     "all-MiniLM-L6-v2": "MiniLM — fast/distilled encoder (384-dim).",
-    "multi-qa-mpnet-base-dot-v1": "Multi-QA MPNet — tuned for retrieval."
+    "multi-qa-mpnet-base-dot-v1": "Multi-QA MPNet — tuned for retrieval.",
 }
 RERANK_OPTIONS = {
     "cross-encoder/ms-marco-MiniLM-L-6-v2": "MiniLM CrossEncoder (6-layer).",
-    "cross-encoder/ms-marco-MiniLM-L-12-v2": "MiniLM CrossEncoder (12-layer)."
+    "cross-encoder/ms-marco-MiniLM-L-12-v2": "MiniLM CrossEncoder (12-layer).",
 }
 
 with st.sidebar:
-    st.header("Settings")
+    st.markdown("### Settings")
     embed_model = st.selectbox("Embedding model", list(EMBED_OPTIONS.keys()), index=0)
     rerank_model = st.selectbox("Reranker model", list(RERANK_OPTIONS.keys()), index=0)
-    top_k = st.number_input("FAISS top_k (retrieve)", min_value=10, max_value=1000, value=50, step=10)
-    rerank_k = st.number_input("Rerank top_k (final)", min_value=1, max_value=50, value=10, step=1)
-    metadata_weight = st.slider("Metadata weight (0=semantic only)", 0.0, 1.0, 0.2, 0.05)
+    top_k = st.number_input("Retrieve top_k", min_value=10, max_value=1000, value=50, step=10)
+    metadata_weight = st.slider("Metadata weight", 0.0, 1.0, 0.2, 0.05)
     exclude_authors_raw = st.text_input("Exclude authors (comma-separated)", value="")
-    st.markdown("---")
-    st.write("Embedding info:")
-    st.write(EMBED_OPTIONS[embed_model])
-    st.write("Reranker info:")
-    st.write(RERANK_OPTIONS[rerank_model])
 
 st.subheader("1) Upload PDF")
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
@@ -67,6 +66,7 @@ if uploaded_file:
     st.success(f"Saved to `{save_path}`")
     try:
         with st.spinner("Extracting..."):
+            from src.parse_pdf import extract_text
             extracted_text = extract_text(save_path)
         st.success("Extraction complete")
     except Exception:
@@ -75,10 +75,10 @@ if uploaded_file:
 else:
     st.info("Or paste text manually below to test the recommender.")
 
-st.subheader("2) Text (title+abstract recommended)")
-text_input = st.text_area("Paper text", value=extracted_text, height=300)
+st.subheader("2) Text (title + abstract recommended)")
+text_input = st.text_area("Paper text", value=extracted_text, height=260, placeholder="Paste title + abstract here...")
 
-col1, col2 = st.columns([1,1])
+col1, col2 = st.columns([1, 1])
 run_btn = col1.button("Run recommender")
 save_btn = col2.button("Save text")
 
@@ -89,7 +89,6 @@ if save_btn:
         f.write(text_input)
     st.success(f"Saved edited text to `{out_file}`")
 
-# run and show
 if run_btn:
     if not text_input or len(text_input.strip()) < 20:
         st.warning("Provide text (title + abstract recommended).")
@@ -99,47 +98,49 @@ if run_btn:
             res = recommend(
                 text_input,
                 top_k=int(top_k),
-                rerank_k=int(rerank_k),
+                rerank_k=5,           # Pass a default integer
                 device="cpu",
                 embed_model_name=embed_model,
                 rerank_model_name=rerank_model,
                 metadata_weight=float(metadata_weight),
-                exclude_authors=exclude_authors
+                exclude_authors=exclude_authors,
             )
         st.success("Done")
 
         if not res["paper_results"]:
-            st.info(
-                "No results yet — build the FAISS index locally with "
-                "`python -m src.embed_index` and commit the `models/` folder."
-            )
+            st.info("No results yet — build the FAISS index locally (`python -m src.embed_index`) and commit the `models/` folder.")
 
-        # prepare dataframe for download
+        # ---- Results (lean vertical)
         rows = []
-        st.subheader("Top papers (final score %)")
+        st.markdown("### Top papers (final score %)")
         for i, (cand, score) in enumerate(res.get("paper_results", []), start=1):
             st.markdown(f"**{i}. {cand.get('author','Unknown')}** — {round(float(score),2)}%")
-            st.write(f"**File:** {cand.get('file','Unknown')}")
-            snippet = cand.get("text","")[:400].replace("\n", " ")
-            st.text_area(f"Snippet {i}", snippet + " ...", height=120, key=f"snip{i}")
-            rows.append({"rank": i, "author": cand.get("author","Unknown"), "file": cand.get("file","Unknown"), "score": float(score)})
+            st.caption(cand.get("file", "Unknown"))
+            snippet = (cand.get("text","")[:400] or "").replace("\n", " ")
+            st.text_area(f"Snippet {i}", snippet + " ...", height=110, key=f"snip{i}")
+            rows.append({
+                "rank": i,
+                "author": cand.get("author","Unknown"),
+                "file": cand.get("file","Unknown"),
+                "score": float(score)
+            })
 
-        st.subheader("Author ranking")
+        st.markdown("### Author ranking")
         rows_auth = []
         for i, (author, avg) in enumerate(res.get("author_rank", []), start=1):
-            st.write(f"{i}. **{author}** — Score: {round(float(avg),2)}%")
+            st.write(f"{i}. **{author}** — {round(float(avg),2)}%")
             rows_auth.append({"rank": i, "author": author, "score": float(avg)})
 
         if rows:
             df = pd.DataFrame(rows)
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download paper results CSV", csv, file_name="paper_results.csv", mime="text/csv")
-
+            st.download_button("Download paper results CSV", df.to_csv(index=False).encode("utf-8"),
+                                file_name="paper_results.csv", mime="text/csv")
         if rows_auth:
             df2 = pd.DataFrame(rows_auth)
-            csv2 = df2.to_csv(index=False).encode('utf-8')
-            st.download_button("Download author ranking CSV", csv2, file_name="author_rank.csv", mime="text/csv")
-st.sidebar.caption(f"Build: {APP_VERSION}")
+            st.download_button("Download author ranking CSV", df2.to_csv(index=False).encode("utf-8"),
+                                file_name="author_rank.csv", mime="text/csv")
+
+st.markdown("---")
 st.markdown(
     "**Project Submission:** This application was developed by "
     "**Karthikeya Siripragada (SE22UECM018)** and "

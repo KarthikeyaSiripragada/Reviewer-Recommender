@@ -3,15 +3,13 @@ import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_JAX"] = "1"
 
-import json
+import json, re
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from collections import defaultdict
-import re
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
-# CPU only
-DEVICE = "cpu"
+DEVICE = "cpu"  # CPU only
 
 # Resolve paths
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +20,8 @@ DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 INDEX_PATH = os.path.join(_REPO_ROOT, "models", "papers.index")
 META_PATH  = os.path.join(_REPO_ROOT, "models", "meta.json")
+
+RERANK_K_FIXED = 5  # always return 5 items
 
 def _tok_set(s: str):
     if not s:
@@ -44,10 +44,10 @@ def _compute_meta_score(query, candidate_meta):
     if "year" in candidate_meta:
         try:
             y = int(candidate_meta["year"])
+            # clamp to [0,1]
             year_score = min(1.0, max(0.0, (y - 2000) / 25.0))
         except Exception:
             year_score = 0.0
-
     return 0.8 * kw_score + 0.2 * year_score
 
 def _load_index_and_meta_or_empty(emb_dim: int):
@@ -67,7 +67,7 @@ def _load_index_and_meta_or_empty(emb_dim: int):
 def recommend(
     query_text,
     top_k=100,
-    rerank_k=10,
+    rerank_k=None,  # ignored; we force 5
     device=DEVICE,
     embed_model_name=DEFAULT_EMBED_MODEL,
     rerank_model_name=DEFAULT_RERANK_MODEL,
@@ -75,10 +75,25 @@ def recommend(
     exclude_authors=None,
     reranker_batch_size=16
 ):
+    # ---- Robust coercions
+    try:
+        top_k = int(top_k) if top_k is not None else 50
+    except Exception:
+        top_k = 50
+    try:
+        metadata_weight = float(metadata_weight) if metadata_weight is not None else 0.2
+    except Exception:
+        metadata_weight = 0.2
+    try:
+        reranker_batch_size = int(reranker_batch_size) if reranker_batch_size is not None else 16
+    except Exception:
+        reranker_batch_size = 16
+    RERANK = int(RERANK_K_FIXED)
+
     if exclude_authors is None:
         exclude_authors = []
 
-    # Models first (to get emb dim)
+    # Load models
     embed_model = SentenceTransformer(embed_model_name, device=device)
     try:
         emb_dim = embed_model.get_sentence_embedding_dimension()
@@ -87,31 +102,29 @@ def recommend(
 
     reranker = CrossEncoder(rerank_model_name, device=device)
 
-    # FAISS + meta
+    # Load FAISS + meta (or empty)
     index, meta = _load_index_and_meta_or_empty(emb_dim)
 
     # Encode query
-    q_emb = embed_model.encode(
-        [query_text], convert_to_numpy=True, normalize_embeddings=True
-    ).astype(np.float32)
+    q_emb = embed_model.encode([query_text], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
     norms = np.linalg.norm(q_emb, axis=1, keepdims=True)
     norms[norms == 0] = 1e-9
     q_emb = q_emb / norms
 
     # Search
     ntotal = index.ntotal if hasattr(index, "ntotal") else 0
-    eff_top_k = min(int(top_k), max(ntotal, 1))
+    eff_top_k = min(top_k, max(ntotal, 1))
     D, I = index.search(q_emb, eff_top_k)
 
     cand_indices = [i for i in I[0].tolist() if isinstance(i, (int, np.integer)) and 0 <= i < len(meta)]
     candidates = [meta[i] for i in cand_indices]
 
+    # Exclude by author
     if exclude_authors:
         ex = set(a.strip() for a in exclude_authors if a.strip())
         candidates = [c for c in candidates if c.get("author") not in ex]
 
     if not candidates:
-        print("[WARN] No candidates found (empty index or all excluded).")
         return {"paper_results": [], "author_rank": []}
 
     # Rerank
@@ -131,28 +144,13 @@ def recommend(
         final_scores.append((1.0 - metadata_weight) * sem + metadata_weight * meta_score)
 
     ranked = sorted(zip(candidates, final_scores), key=lambda x: -x[1])
-    top = ranked[: int(rerank_k)]
+    top = ranked[:RERANK]  # always 5
 
     # Author agg (max)
     author_scores = defaultdict(list)
     for cand, score in top:
         author_scores[cand.get("author", "Unknown")].append(float(score))
     author_rank = sorted([(a, float(max(s))) for a, s in author_scores.items()], key=lambda x: -x[1])
-
-    # Console
-    print("\n🔍 Query:", query_text)
-    print("\n🏆 Top Recommended Reviewers:\n")
-    for i, (cand, score) in enumerate(top, 1):
-        pct = round(float(score) * 100, 2)
-        snippet = cand.get("text", "")[:120].replace("\n", " ")
-        print(f"{i}. Author: {cand.get('author','Unknown')}")
-        print(f"   Final score: {pct}% (semantic + metadata combined)")
-        print(f"   Paper: {cand.get('file', 'Unknown')}")
-        print(f"   Snippet: {snippet}...\n")
-
-    print("📊 Author Ranking Summary:")
-    for i, (author, avg_score) in enumerate(author_rank, 1):
-        print(f"{i}. {author} — Score: {round(avg_score * 100, 2)}%")
 
     return {
         "paper_results": [(c, float(s * 100)) for c, s in top],
