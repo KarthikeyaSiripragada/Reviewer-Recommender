@@ -1,7 +1,20 @@
-# app.py (at repo root)
+# app.py — safe Streamlit entry (import UI from ui/streamlit_app.py)
 import sys
-from streamlit.web import cli as stcli
+from pathlib import Path
+import importlib
 
-# run your existing UI file
-sys.argv = ["streamlit", "run", "ui/streamlit_app.py", "--server.port=7860"]
-sys.exit(stcli.main())
+# ensure repo root is on sys.path
+REPO_ROOT = str(Path(__file__).resolve().parent)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+# import UI module that defines the Streamlit app
+streamlit_app = importlib.import_module("ui.streamlit_app")
+
+if __name__ == "__main__":
+    try:
+        from streamlit.web import cli as stcli
+    except Exception:
+        import streamlit.cli as stcli  # type: ignore
+    sys.argv = ["streamlit", "run", __file__]
+    sys.exit(stcli.main())
