@@ -12,11 +12,22 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 # --- end of path fix ---
 
-# Now this import will work
+# Now imports that use repo path
 import traceback
 import pandas as pd
 import streamlit as st
-from src.query import recommend, INDEX_PATH, META_PATH # Combined imports
+import importlib
+import json
+import pathlib
+
+# Import module (we'll reload when we rewrite meta.json)
+import src.query as query_mod
+importlib.reload(query_mod)
+
+# expose the variables used in the rest of the app (keeps names consistent)
+recommend = query_mod.recommend
+INDEX_PATH = query_mod.INDEX_PATH
+META_PATH = query_mod.META_PATH
 
 st.set_page_config(page_title="Reviewer Recommender", layout="wide")
 
@@ -36,6 +47,29 @@ if _os.path.exists(META_PATH):
 else:
     st.sidebar.error("Meta MISSING")
 
+# Helper: ensure meta.json is a dict-like mapping so older loaders won't crash
+def ensure_meta_json_is_mapping(meta_path):
+    """
+    If meta.json is a JSON list, convert it to a JSON object with string keys:
+      [{...}, {...}] -> {"0": {...}, "1": {...}, ...}
+    Return True if a conversion was done, False otherwise.
+    """
+    p = pathlib.Path(meta_path)
+    if not p.exists():
+        return False
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    if isinstance(raw, list):
+        # Convert list to dict with string keys (safe for code that uses .items())
+        converted = {str(i): entry for i, entry in enumerate(raw)}
+        p.write_text(json.dumps(converted, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    # already a dict or other acceptable form
+    return False
+
 EMBED_OPTIONS = {
     "all-mpnet-base-v2": "MPNet — high-quality sentence embeddings (768-dim).",
     "all-MiniLM-L6-v2": "MiniLM — fast/distilled encoder (384-dim).",
@@ -49,14 +83,13 @@ RERANK_OPTIONS = {
 with st.sidebar:
     st.markdown("### Settings")
     
-    # --- NEW: Mode Selector ---
+    # --- Mode Selector ---
     recommend_mode = st.selectbox(
         "Recommendation Mode",
         ["embedding", "tfidf", "lda", "doc2vec"],
         index=0,
         help="Select the retrieval strategy. 'embedding' is the default SBERT+Reranker. 'tfidf' is keyword-based."
     )
-    # ---
     
     embed_model = st.selectbox("Embedding model", list(EMBED_OPTIONS.keys()), index=0)
     rerank_model = st.selectbox("Reranker model", list(RERANK_OPTIONS.keys()), index=0)
@@ -102,6 +135,16 @@ if run_btn:
     if not text_input or len(text_input.strip()) < 20:
         st.warning("Provide text (title + abstract recommended).")
     else:
+        # ensure meta.json format before calling recommend
+        converted = ensure_meta_json_is_mapping(META_PATH)
+        if converted:
+            st.info("Detected old meta.json list format and converted to mapping. Reloading query module...")
+            # reload module objects to be safe
+            importlib.reload(query_mod)
+            recommend = query_mod.recommend
+            INDEX_PATH = query_mod.INDEX_PATH
+            META_PATH = query_mod.META_PATH
+
         exclude_authors = [a.strip() for a in exclude_authors_raw.split(",") if a.strip()]
         
         # ---- SAFE coercions BEFORE calling recommend (avoid int/float on None)
@@ -118,9 +161,9 @@ if run_btn:
             with st.spinner(f"Running recommendation (mode: {recommend_mode})..."):
                 res = recommend(
                     text_input,
-                    mode=recommend_mode,  # <-- NEW: Pass the selected mode
+                    mode=recommend_mode,
                     top_k=top_k_val,
-                    rerank_k=5,           # Pass a default integer
+                    rerank_k=5,
                     device="cpu",
                     embed_model_name=embed_model,
                     rerank_model_name=rerank_model,
@@ -167,7 +210,6 @@ if run_btn:
         except Exception as e:
             st.error("An error occurred during recommendation:")
             st.text(traceback.format_exc())
-
 
 st.markdown("---")
 st.markdown(

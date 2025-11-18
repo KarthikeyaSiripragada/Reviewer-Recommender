@@ -59,29 +59,80 @@ def _compute_meta_score(query, candidate_meta):
 
 def _load_index_and_meta_or_empty(emb_dim):
     """
-    Return (index, meta). If missing, return an empty IndexFlatIP with given emb_dim and empty meta dict.
+    Load FAISS index and metadata. Return (index, meta_dict).
+    Accepts meta.json as either dict or list and converts to {int: meta}.
+    If index or meta missing or unreadable, returns an empty IndexFlatIP and an (possibly empty) meta dict.
     """
-    if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
-        index = faiss.read_index(INDEX_PATH)
-        with open(META_PATH, "r", encoding="utf-8") as f:
-            meta_raw = json.load(f)
-        meta = {int(k): v for k, v in meta_raw.items()}
-        return index, meta
+    meta = {}
+    if os.path.exists(META_PATH):
+        try:
+            with open(META_PATH, "r", encoding="utf-8") as f:
+                meta_raw = json.load(f)
 
-    # fallback (ensure emb_dim is an int)
+            # If it's a dict: convert keys that look like ints to int keys
+            if isinstance(meta_raw, dict):
+                meta = {}
+                for k, v in meta_raw.items():
+                    try:
+                        ik = int(k)
+                        meta[ik] = v
+                    except Exception:
+                        # skip keys that can't be converted to int
+                        continue
+
+            # If it's a list: enumerate into integer-keyed dict
+            elif isinstance(meta_raw, list):
+                meta = {int(i): v for i, v in enumerate(meta_raw)}
+
+            else:
+                print(f"[WARN] Unexpected meta.json type: {type(meta_raw)}. Using empty meta.")
+        except Exception as e:
+            print(f"[WARN] Failed reading meta.json: {e}. Using empty meta.")
+
+    # Determine embedding dimension fallback
     try:
         emb_dim_i = int(emb_dim)
     except Exception:
         emb_dim_i = 768
-    print(f"[INFO] FAISS index or metadata not found. Returning empty index (dim={emb_dim_i}).")
-    return faiss.IndexFlatIP(emb_dim_i), {}
+
+    # Load FAISS index if present
+    if os.path.exists(INDEX_PATH):
+        try:
+            index = faiss.read_index(INDEX_PATH)
+            return index, meta
+        except Exception as e:
+            print(f"[WARN] Could not read FAISS index at {INDEX_PATH}: {e}. Creating empty index.")
+
+    # Fallback empty index
+    print(f"[INFO] FAISS index not found or unreadable. Creating empty IndexFlatIP(dim={emb_dim_i}).")
+    return faiss.IndexFlatIP(emb_dim_i), meta
 
 
 def _load_meta_or_empty():
+    """
+    Return meta dict keyed by integer index. Accepts both dict and list JSON formats.
+    """
     if os.path.exists(META_PATH):
-        with open(META_PATH, "r", encoding="utf-8") as f:
-            meta_raw = json.load(f)
-        return {int(k): v for k, v in meta_raw.items()}
+        try:
+            with open(META_PATH, "r", encoding="utf-8") as f:
+                meta_raw = json.load(f)
+
+            if isinstance(meta_raw, dict):
+                meta = {}
+                for k, v in meta_raw.items():
+                    try:
+                        meta[int(k)] = v
+                    except Exception:
+                        continue
+                return meta
+            elif isinstance(meta_raw, list):
+                return {int(i): v for i, v in enumerate(meta_raw)}
+            else:
+                print(f"[WARN] Unexpected meta.json type: {type(meta_raw)}. Returning empty.")
+                return {}
+        except Exception as e:
+            print(f"[WARN] Failed reading meta.json: {e}. Returning empty.")
+            return {}
     print(f"[INFO] Metadata not found at {META_PATH}. Returning empty.")
     return {}
 
@@ -105,25 +156,29 @@ def recommend_embedding(
     embed_model_name = embed_model_name or DEFAULT_EMBED_MODEL
     rerank_model_name = rerank_model_name or DEFAULT_RERANK_MODEL
     exclude_authors = exclude_authors or []
-    RERANK = int(RERANK_K_FIXED)
+    RERANK = int(RERANK_K_FIXED) if rerank_k is None else int(rerank_k)
 
-    # Load encoder + reranker
+    # Load encoder model
     embed_model = SentenceTransformer(embed_model_name, device=device)
-    # get embedding dim, handle case where model returns None for dimension
-    emb_dim_val = embed_model.get_sentence_embedding_dimension()
+    # determine embedding dim robustly
+    emb_dim_val = None
+    try:
+        emb_dim_val = embed_model.get_sentence_embedding_dimension()
+    except Exception:
+        emb_dim_val = None
+
     if emb_dim_val is not None:
         try:
             emb_dim = int(emb_dim_val)
         except Exception:
             emb_dim = int(embed_model.encode(["x"], convert_to_numpy=True).shape[-1])
     else:
-        # fallback to infer dimension from a sample encoding
         emb_dim = int(embed_model.encode(["x"], convert_to_numpy=True).shape[-1])
 
-    reranker = CrossEncoder(rerank_model_name, device=device)
-
-    # Load index/meta
+    # Load index and meta
     index, meta = _load_index_and_meta_or_empty(emb_dim)
+
+    # If no metadata, nothing to return
     if not meta:
         return {"paper_results": [], "author_rank": []}
 
@@ -134,26 +189,34 @@ def recommend_embedding(
     norms[norms == 0] = 1e-9
     q_emb = q_emb / norms
 
-    # ensure k is valid int
+    # Determine effective top_k based on index size
     ntotal = getattr(index, "ntotal", 0)
+    if ntotal == 0:
+        ntotal = max(len(meta), 0)
     eff_top_k = min(top_k, max(int(ntotal), 1))
     eff_top_k = int(eff_top_k) if eff_top_k is not None else 1
 
-    # Make contiguous and call FAISS search. type: ignore silences Pylance false-positive.
+    # Run FAISS search (safe)
     q_emb = np.ascontiguousarray(q_emb, dtype=np.float32)
-    distances, indices = index.search(q_emb, eff_top_k)  # type: ignore
+    try:
+        distances, indices = index.search(q_emb, eff_top_k)  # type: ignore
+    except Exception as e:
+        print(f"[WARN] FAISS search failed: {e}")
+        return {"paper_results": [], "author_rank": []}
 
-    # build candidate list (only valid indices)
+    # Build candidate list from valid indices present in meta
     cand_indices = []
-    if indices is not None:
-        # indices may be numpy array shape (1, k)
+    if indices is not None and len(indices) > 0:
         for val in indices[0].tolist():
-            if isinstance(val, (int, np.integer)) and 0 <= val < len(meta):
-                cand_indices.append(int(val))
+            try:
+                if isinstance(val, (int, np.integer)) and (val in meta):
+                    cand_indices.append(int(val))
+            except Exception:
+                continue
 
     candidates = [meta[i] for i in cand_indices]
 
-    # exclude authors
+    # Exclude authors if requested
     if exclude_authors:
         ex = {a.strip() for a in exclude_authors if a.strip()}
         candidates = [c for c in candidates if c.get("author") not in ex]
@@ -161,16 +224,29 @@ def recommend_embedding(
     if not candidates:
         return {"paper_results": [], "author_rank": []}
 
-    # rerank with CrossEncoder
-    pairs = [(query_text, c.get("text", "")[:4000]) for c in candidates]
-    scores = np.array(reranker.predict(pairs, batch_size=reranker_batch_size), dtype=float)
+    # Rerank with CrossEncoder (fallback to embedding similarity if reranker fails)
+    try:
+        reranker = CrossEncoder(rerank_model_name, device=device)
+        pairs = [(query_text, c.get("text", "")[:4000]) for c in candidates]
+        scores = np.array(reranker.predict(pairs, batch_size=reranker_batch_size), dtype=float)
+    except Exception as e:
+        print(f"[WARN] Reranker failed: {e}. Falling back to embedding cosine similarity.")
+        cand_texts = [c.get("text", "")[:512] for c in candidates]
+        cand_embs = embed_model.encode(cand_texts, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+        # cosine similarity manual (cand_embs dot q_emb)
+        q_vec = q_emb[0]
+        denom = (np.linalg.norm(cand_embs, axis=1) * (np.linalg.norm(q_vec) + 1e-9))
+        scores = np.dot(cand_embs, q_vec) / (denom + 1e-9)
+        scores = np.array(scores, dtype=float)
 
-    # normalize to 0..1
+    # Normalize semantic scores to 0..1
+    if scores.size == 0:
+        return {"paper_results": [], "author_rank": []}
     semantic = np.ones_like(scores) if scores.max() == scores.min() else (
         (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
     )
 
-    # combine with metadata
+    # Combine semantic and metadata score
     final_scores = []
     for c, sem in zip(candidates, semantic):
         meta_score = _compute_meta_score(query_text, c)
@@ -179,7 +255,7 @@ def recommend_embedding(
     ranked = sorted(zip(candidates, final_scores), key=lambda x: -x[1])
     top = ranked[:RERANK]
 
-    # author aggregation (mean)
+    # Aggregate author scores (mean)
     author_scores = defaultdict(list)
     for cand, score in top:
         author_scores[cand.get("author", "Unknown")].append(float(score))
